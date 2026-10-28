@@ -16,9 +16,7 @@
             surface: '#0a0a0c',
             panel: '#111115',
             border: '#1f1f26',
-            accent: '#10b981',
-            accentBlue: '#3b82f6',
-            accentPurple: '#8b5cf6'
+            accent: '#10b981'
           }
         }
       }
@@ -221,14 +219,14 @@
         <div class="flex items-center justify-between">
           <div>
             <h3 class="text-sm font-bold text-white">Saved Specifications in Google Sheets (`Saved_Specs`)</h3>
-            <p class="text-xs text-zinc-400">Live records fetched from your Google Apps Script Web App</p>
+            <p class="text-xs text-zinc-400">Click any saved project to load its blueprint back into the workbench</p>
           </div>
           <button onclick="loadSpecsFromSheet()" class="px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-xs text-emerald-400 border border-zinc-700">
             <i class="fa-solid fa-rotate mr-1"></i> Refresh Sheet
           </button>
         </div>
         <div id="vaultList" class="space-y-2 text-xs text-zinc-400">
-          Click "Refresh Sheet" after configuring your Google Apps Script `/exec` URL.
+          Click "Refresh Sheet" to load your saved blueprints.
         </div>
       </div>
 
@@ -262,7 +260,7 @@
         </div>
 
         <div>
-          <label class="block font-semibold text-zinc-300 mb-1">3. Cloud LLM API Key (Only needed for Direct mode)</label>
+          <label class="block font-semibold text-zinc-300 mb-1">3. Cloud LLM API Key (Optional if stored in Script Properties)</label>
           <input id="cfgApiKey" type="password" placeholder="AIzaSy... or gsk_..." class="w-full px-3 py-2 rounded bg-panel border border-border text-white mono" />
           <p class="text-[11px] text-zinc-400 mt-1">Stored locally in your browser's `localStorage`. Never committed to GitHub.</p>
         </div>
@@ -335,7 +333,6 @@
       const artifactLabel = currentArtifact === 'exe' ? 'Standalone Windows Desktop .EXE' :
                             currentArtifact === 'webapp' ? 'Full-Stack Cloud Web Application' : 'High-Conversion Responsive Website';
 
-      // 1. Master Prompt
       const master = `# ROLE & OBJECTIVE
 Act as a Principal Software Architect and Senior Full-Stack Engineer.
 Build **${name}**, a production-ready **${artifactLabel}**.
@@ -359,7 +356,6 @@ Start by providing the clean file/folder structure, then output the complete, ru
 
       document.getElementById('masterPromptOut').textContent = master;
 
-      // 2. 5-Stage Slicer
       const stages = [
         {
           title: "Stage 1: Architecture, Schema & File Blueprint",
@@ -367,7 +363,7 @@ Start by providing the clean file/folder structure, then output the complete, ru
         },
         {
           title: "Stage 2: Core Backend / Data Layer & API Engine",
-          prompt: `Now implement Stage 2 for "${name}". Build the complete data access layer, state management, and API/storage functions supporting:\n${ dataModel }\nInclude full try/catch error handling and validation.`
+          prompt: `Now implement Stage 2 for "${name}". Build the complete data access layer, state management, and API/storage functions supporting:\n${dataModel}\nInclude full try/catch error handling and validation.`
         },
         {
           title: "Stage 3: Frontend UI Shell & Interactive Views",
@@ -397,12 +393,11 @@ Start by providing the clean file/folder structure, then output the complete, ru
         </div>
       `).join('');
 
-      // 3. Context Files
       document.getElementById('specMdOut').textContent = master;
       document.getElementById('cursorRulesOut').textContent = `# Project Rules for ${name}\n- Stack: ${stack}\n- Theme: ${theme}\n` + rules.map(r => `- ${r}`).join('\n');
     }
 
-    // CLOUD AI REFINEMENT (GAS PROXY OR DIRECT HTTPS)
+    // CLOUD AI REFINEMENT (MATCHED TO Code.gs `aiProxy` & `ok: true`)
     async function refineWithCloudAI() {
       const gasUrl = localStorage.getItem('pf_gas_url') || '';
       const provider = localStorage.getItem('pf_ai_provider') || 'gas_proxy';
@@ -428,14 +423,17 @@ Start by providing the clean file/folder structure, then output the complete, ru
             method: 'POST',
             headers: { 'Content-Type': 'text/plain;charset=utf-8' },
             body: JSON.stringify({
-              action: 'ai_refine',
-              prompt: `${sysInstruction}\n\nRough Idea:\n${rawFeatures}`
+              action: 'aiProxy',
+              apiKey: apiKey,
+              model: 'gemini-2.5-flash',
+              systemPrompt: sysInstruction,
+              userPrompt: rawFeatures
             }),
             redirect: 'follow'
           });
           const data = await res.json();
-          if (data.status !== 'ok') throw new Error(data.message || 'GAS AI Proxy error');
-          refinedText = data.output;
+          if (!data.ok && data.status !== 'ok') throw new Error(data.error || data.message || 'GAS AI Proxy error');
+          refinedText = data.text || data.output || '';
         } else if (provider === 'gemini_direct') {
           if (!apiKey) throw new Error('Paste your Gemini API Key in Cloud Setup.');
           const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
@@ -478,7 +476,7 @@ Start by providing the clean file/folder structure, then output the complete, ru
       }
     }
 
-    // GOOGLE SHEETS SYNC (CORS-SAFE TEXT/PLAIN POST)
+    // GOOGLE SHEETS SYNC (MATCHED TO Code.gs `saveSpec` & `listSpecs`)
     async function saveSpecToSheet() {
       const gasUrl = localStorage.getItem('pf_gas_url') || '';
       if (!gasUrl) {
@@ -491,28 +489,32 @@ Start by providing the clean file/folder structure, then output the complete, ru
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
 
       try {
-        const payload = {
-          action: 'save_spec',
-          projectName: document.getElementById('projName').value,
-          targetType: currentArtifact,
+        const projectObj = {
+          id: 'SPEC-' + Date.now(),
+          name: document.getElementById('projName').value,
+          target: currentArtifact,
           stack: document.getElementById('stackSelect').value,
           features: document.getElementById('projFeatures').value,
           dataModel: document.getElementById('projData').value,
+          theme: document.getElementById('uiTheme').value,
           masterPrompt: document.getElementById('masterPromptOut').textContent
         };
 
         const res = await fetch(gasUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            action: 'saveSpec',
+            project: projectObj
+          }),
           redirect: 'follow'
         });
         const data = await res.json();
-        if (data.status === 'ok') {
+        if (data.ok || data.status === 'ok') {
           showToast('Saved to Google Sheet (Saved_Specs)!');
-          updateBadge(true);
+          updateBadge(true, 'Sheet Synced');
         } else {
-          throw new Error(data.message || 'Save failed');
+          throw new Error(data.error || data.message || 'Save failed');
         }
       } catch (err) {
         showToast('Sheet Error: ' + err.message);
@@ -531,20 +533,25 @@ Start by providing the clean file/folder structure, then output the complete, ru
       container.innerHTML = '<p class="text-zinc-400"><i class="fa-solid fa-spinner fa-spin mr-1"></i>Loading from Google Sheets...</p>';
 
       try {
-        const res = await fetch(gasUrl + '?action=list', { redirect: 'follow' });
+        const res = await fetch(gasUrl + '?action=listSpecs', { redirect: 'follow' });
         const data = await res.json();
-        if (data.status === 'ok' && Array.isArray(data.items)) {
-          updateBadge(true);
-          if (data.items.length === 0) {
+        const list = data.specs || data.items || [];
+        if (data.ok || data.status === 'ok') {
+          updateBadge(true, 'Sheet Connected');
+          if (list.length === 0) {
             container.innerHTML = '<p class="text-zinc-500">No saved specs yet. Click "Save to Sheet" to store your first blueprint.</p>';
             return;
           }
-          container.innerHTML = data.items.map(item => `
-            <div class="p-3 rounded-lg bg-surface border border-border flex items-center justify-between gap-2">
+          window._loadedSpecs = list;
+          container.innerHTML = list.map((item, idx) => `
+            <div class="p-3 rounded-lg bg-surface border border-border flex items-center justify-between gap-2 hover:border-emerald-500/50 transition">
               <div>
-                <div class="font-bold text-white text-xs">${item.projectName || 'Untitled'} <span class="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-emerald-400 ml-1">${item.targetType || ''}</span></div>
-                <div class="text-[11px] text-zinc-400">${item.stack || ''} • ${item.timestamp || ''}</div>
+                <div class="font-bold text-white text-xs">${item.name || item.projectName || 'Untitled'} <span class="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-emerald-400 ml-1">${item.target || item.targetType || ''}</span></div>
+                <div class="text-[11px] text-zinc-400">${item.stack || ''} • ${item.updatedAt || item.timestamp || ''}</div>
               </div>
+              <button onclick="restoreSpec(${idx})" class="px-2.5 py-1 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold">
+                Load Spec
+              </button>
             </div>
           `).join('');
         }
@@ -553,28 +560,41 @@ Start by providing the clean file/folder structure, then output the complete, ru
       }
     }
 
+    function restoreSpec(idx) {
+      const item = (window._loadedSpecs || [])[idx];
+      if (!item) return;
+      const p = item.payload || item;
+      if (p.target) setArtifact(p.target);
+      if (p.name) document.getElementById('projName').value = p.name;
+      if (p.features) document.getElementById('projFeatures').value = p.features;
+      if (p.dataModel) document.getElementById('projData').value = p.dataModel;
+      compileAll();
+      switchTab('tab-master');
+      showToast('Loaded "' + (p.name || 'Spec') + '" into workbench!');
+    }
+
     async function testSheetConnection() {
       const url = document.getElementById('cfgGasUrl').value.trim();
       if (!url) return showToast('Paste your /exec Web App URL first');
       try {
         const res = await fetch(url + '?action=ping', { redirect: 'follow' });
         const data = await res.json();
-        if (data.status === 'ok') {
-          updateBadge(true);
-          showToast('Connected to Google Sheets!');
+        if (data.ok || data.status === 'ok') {
+          updateBadge(true, data.sheetName ? `Linked: ${data.sheetName}` : 'Sheet Connected');
+          showToast(`Connected to ${data.sheetName || 'Google Sheets'}!`);
         } else {
-          showToast('Unexpected response: ' + JSON.stringify(data));
+          showToast('Error: ' + JSON.stringify(data));
         }
       } catch (e) {
         showToast('CORS / Network Error: Ensure Who Has Access = Anyone');
       }
     }
 
-    function updateBadge(connected) {
+    function updateBadge(connected, labelText) {
       const b = document.getElementById('sheetStatusBadge');
       if (connected) {
         b.className = 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-700';
-        b.innerHTML = '<i class="fa-solid fa-circle text-[8px] mr-1"></i>Sheet Connected';
+        b.innerHTML = `<i class="fa-solid fa-circle text-[8px] mr-1"></i>${labelText || 'Sheet Connected'}`;
       }
     }
 
@@ -607,7 +627,7 @@ Start by providing the clean file/folder structure, then output the complete, ru
       localStorage.setItem('pf_ai_provider', document.getElementById('cfgAiProvider').value);
       localStorage.setItem('pf_api_key', document.getElementById('cfgApiKey').value.trim());
       closeConfigModal();
-      showToast('Cloud configuration saved in browser!');
+      testSheetConnection();
     }
 
     function copyText(id) {
@@ -635,10 +655,11 @@ Start by providing the clean file/folder structure, then output the complete, ru
       setTimeout(() => t.classList.add('hidden'), 3200);
     }
 
-    // INIT
     window.addEventListener('DOMContentLoaded', () => {
       setArtifact('webapp');
-      if (localStorage.getItem('pf_gas_url')) updateBadge(true);
+      if (localStorage.getItem('pf_gas_url')) {
+        updateBadge(true, 'Sheet Linked');
+      }
     });
   </script>
 </body>
